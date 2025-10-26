@@ -1,0 +1,71 @@
+function [gradients, loss, state]= Model(p_train, t_train, params, state)
+
+%% Get LSTM network weights
+lstmbias = params.lstm.bias;
+lstmweight = params.lstm.weights;
+lstmrecurrentWeights = params.lstm.recurrentWeights;
+num_hidden = size(lstmrecurrentWeights, 2);
+
+%% In the same epoch, the state is passed between different batches but not learned
+h0 = state.lstm.h0;
+c0 = state.lstm.c0;
+[Lstm_Y, h0, c0] = lstm(p_train, h0, c0, lstmweight, lstmrecurrentWeights, lstmbias);
+
+%% Attention parameters
+Attentionweight = params.attention.weight;   % Score weight
+Ht = Lstm_Y(:, :, end);                      % Reference vector
+num_time = size(Lstm_Y, 3);                  % Time scale
+
+%% Attention scores
+socre = dlarray;
+for i = 1: num_time - 1
+    A = extractdata(squeeze(Lstm_Y(:, :, i)));
+    A = repmat(A, [1, 1, num_hidden]);
+    A = permute(A, [1, 3, 2]);
+    A = dlarray(A, 'SCB');
+    B = squeeze(sum(A .* dlarray(Attentionweight, 'SC'), 1));
+    C = squeeze(sum(B .* Ht, 1));
+    socre = [socre; C];
+end
+
+%% Attention scores
+a = sigmoid(socre);
+Vt = 0;
+for i = 1: num_time - 1
+    Vt = Vt + a(i, :) .* Lstm_Y(:, :, i);
+end
+
+%% Attention mechanism
+bias1 = params.attenout.bias1;
+bias2 = params.attenout.bias2;
+weight1 = params.attenout.weight1;
+weight2 = params.attenout.weight2;
+
+HVT = fullyconnect(Vt, weight1, bias1) + fullyconnect(Ht, weight2, bias2);
+
+%% Fully connected layer
+LastBias = params.fullyconnect.bias1;
+LastWeight = params.fullyconnect.weight1;
+
+FCI = fullyconnect(HVT, LastWeight, LastBias);
+FCI = relu(FCI);
+
+%% Regression layer
+fullybias = params.fullyconnect.bias2;
+fullyweight = params.fullyconnect.weight2;
+
+T_sim = fullyconnect(FCI, fullyweight, fullybias);
+T_sim = squeeze(T_sim);
+% T_sim = relu(T_sim);
+
+%% Loss function
+loss = mse(T_sim, t_train);
+
+%% Compute gradients
+gradients = dlgradient(loss, params);
+
+%% Get initial state
+state.lstm.h0 = h0;
+state.lstm.c0 = c0;
+
+end
